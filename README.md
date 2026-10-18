@@ -8,6 +8,8 @@ SnowCut requires the machine to be running the SnowCut custom firmware. If the m
 
 SnowCut is an independent project and is not affiliated with or endorsed by any equipment manufacturer.
 
+If you use this software and it helps you get more out of your machine, please consider donating using Github Sponsorships or Ko-Fi.
+
 ## Requirements
 
 - Windows 10 or 11
@@ -46,3 +48,7 @@ From a release, extract the zip file and run SnowCut.exe.
 ## User data
 
 Mat profiles and other user data are stored in `Documents\SnowCut`.
+
+## License
+
+This software is available freely via the PolyForm Non-Commercial license. This is different from a normal "open source" license. It is a "source available" license. This is to prevent people from attempting to sell machines that have been modified with this software, etc. The art that you create using the software is yours. You can do whatever you want with it, including sell it. The license prevents the software itself from being repackaged or modified **and sold**. It's free to modify for personal use or to create your own freely available version.
