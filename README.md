@@ -1,6 +1,6 @@
 <img width="480" height="127" alt="logo" src="https://github.com/user-attachments/assets/bce59f9d-331a-444f-90f7-76bc63330e21" />
 
-SnowCut is a desktop application for designing, scanning, and cutting with the CM100/CM110 scanning and cutting machine. It supplements the machine's built-in editing and cutting workflow with one that runs on a PC and communicates with the machine over the USB cable. It also allows you to scan and cut using an unrecognized/unsupported mat, or even no mat at all, as long as the media is wide enough to engage both roller grips.
+SnowCut is a desktop application for designing, scanning, and cutting with the CM100/CM110/CM600 scanning and cutting machine (with untested support for others in the same family-- see the table below). It supplements the machine's built-in editing and cutting workflow with one that runs on a PC and communicates with the machine over the USB cable. It also allows you to scan and cut using an unrecognized/unsupported mat, or even no mat at all, as long as the media is wide enough to engage both roller grips.
 
 I designed this software for myself because I was frustrated with the limitations imposed by the original firmware. I've tested it only as far as necessary to do what I use it for, and I've only tested it on my own machine. Please let me know via an issue if you have alignment issues or if there's anything else that needs improvement. The additional functions may allow you to do things with your machine that it is not designed to do, so please use with care! **This software is provided for free with no guarantee of suitability for any purpose. Use at your own risk.**
 
@@ -29,13 +29,14 @@ From a release, extract the zip file and run SnowCut.exe.
 4. Follow the prompt to choose an original `.upf` file. SnowCut will save a patched copy that you can copy to a USB flash drive and install on the machine using its normal update procedure. The firmware tools are also available in **Machine > Machine Settings**. Find the original firmware on the manufacturer's website. Known supported firmware files (version 1819 only):
 
    | Models | File |
+   | --- | --- |
    | CM100DM, CM110, CM600 |  `SNC0001V1819W.upf` | 
    | CM550, CM840 |  `SNC0003V1819W.upf` | 
    | CM250 | `SNC0004V1819W.upf` |
    | CM300, CM260 | `SNC0011V1819W.upf` |
    | CM110 (Japan) |   `SNC00D0V1819W.upf`  |
    | CM300 (Japan) | `SNC00D2V1819W.upf` |
-   | --- | --- |
+  
 
    The same model can have a different name in another region, so I recommend looking for the correct update for your actual machine, and see if the filename matches one of these. The machine will refuse to update if the `SNCXXXX` code doesn't match. Version 1820, which some European models received, is not supported. If you're already using version 1820, you can attempt to downgrade to 1819 if you can find the correct file for your machine, but this has not been tested. All of the 1819 firmware versions contain the exact same program code, but SnowCut has only been tested on a Japanese CM110. While it seems very likely that all of the machines listed here will work correctly with SnowCut, it can not be guaranteed. If you have a machine that is on version 1819 and it's not listed here, post an issue with the model information and I'll try to add it to the supported machines.
 
