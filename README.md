@@ -26,7 +26,7 @@ From a release, extract the zip file and run SnowCut.exe.
 1. Connect the machine to the PC with a USB printer cable (B to A) and turn it on. The USB-B port is directly below the USB-A port on the side of the machine. There may be a removable flush cover hiding it.
 2. Start SnowCut. When it starts, it will attempt to detect a CM110 connected to your computer.
 3. If the machine is detected, SnowCut will ask to connect with administrator rights. Accept the prompt so it can communicate with the machine. You can also do this later from **Machine > Connect with Administrator Rights**.
-4. Follow the prompt to choose an original `.upf` file. SnowCut will save a patched copy that you can copy to a USB flash drive and install on the machine using its normal update procedure. The firmware tools are also available in **Machine > Machine Settings**. Find the original firmware on the manufacturer's website. Supported firmware versions are `SNC00D0V1819W.upf` (Japan) and `SNC0004V1819W.upf` (North America). If your CM110 machine uses a different firmware region, post an issue here and I will attempt to add it to the list of compatible versions.
+4. Follow the prompt to choose an original `.upf` file. SnowCut will save a patched copy that you can copy to a USB flash drive and install on the machine using its normal update procedure. The firmware tools are also available in **Machine > Machine Settings**. Find the original firmware on the manufacturer's website. Supported firmware versions are `SNC00D0V1819W.upf` (Japan) and `SNC0001V1819W.upf` (North America). If your CM110 machine uses a different firmware region, post an issue here and I will attempt to add it to the list of compatible versions.
 
 ## Basic workflow
 
