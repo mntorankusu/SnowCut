@@ -33,8 +33,8 @@ From a release, extract the zip file and run SnowCut.exe.
 1. **Create or open a project.** Use **File > New Project** or **File > Open Project**. Projects are saved as `.sncproj` files.
 2. **Add artwork.** Use **File > Import** to bring in SVG, PNG, JPEG, BMP, or PDF files, or draw directly on the mat with the shapes, pen, and text tools in the **Tools** panel.
 3. **Choose the mat.** Open **Mat settings** from the **Device** panel and select the mat you are using. You can add the dimensions of a custom mat here or you can select an official 12x12 or 12x24 mat.
-4. **Load the mat.** Press **Load / unload mat** in the **Device** panel. 
-5. **Scan (optional).** Press **Scan** to open the **Scan** panel. Press **Draw box** and drag a box on the canvas, or choose **Whole area**, choose where to save the image, and press **Scan**. To align your artwork with the scan, load the image with **File > Set Background Image**.
+4. **Load the mat.** Press **Load / unload mat** in the **Device** panel.
+5. **Scan (optional).** Press **Scan** to open the **Scan** panel. Press **Draw box** and drag a box on the canvas, or choose **Whole area**, choose where to save the image (and/or if you'd like to apply it directly to the canvas for alignment), and press **Scan**.
 6. **Set color group settings** to select a tool, speed and pressure setting for each different line color used on the canvas. 
 7. **Adjust the cut settings.** Open **Cut settings** from the **Device** panel to set the blade compensation settings. The Machine setting will give you results similar to the original firmware, while the default Custom settings should be slightly improved. You can also change the settings to match the dimensions of an aftermarket cutting blade that you have installed in your machine.
 8. **Cut.** Press **Cut** in the **Device** panel, then press **Generate** to prepare the job and review the preview on the canvas. Press **Send to machine** to start cutting. Enable **Dry run (blade up)** first if you want to check the path without cutting. 
