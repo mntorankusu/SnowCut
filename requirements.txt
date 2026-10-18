@@ -1,0 +1,10 @@
+PySide6-Essentials>=6.6
+Pillow>=10
+numpy>=1.26
+pyusb>=1.3
+# optional: only needed for PDF import (core/raster.py)
+pypdfium2>=4
+# optional, not pip: the Device panel's Mount button (USB drive as a Windows drive letter)
+# needs WinFsp installed system-wide: https://winfsp.dev/rel/ (used via ctypes, no winfspy)
+# packaging
+pyinstaller>=6.0
