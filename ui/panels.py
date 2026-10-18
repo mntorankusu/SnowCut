@@ -5,7 +5,7 @@ Field labels sit in QFormLayouts without trailing colons, like the Scan / Mat / 
 Dynamic lists clamp to 2..5 visible rows so panels stay compact."""
 from collections import Counter
 from PySide6 import QtWidgets, QtGui, QtCore
-from core.doc import normalize_color, GROUP_TOOLS
+from core.doc import normalize_color, GROUP_TOOLS, SKIP_TOOL, TAB_GAP_MIN_MM, TAB_GAP_MAX_MM
 from core import userdata
 from .curve_editor import CurveEditor
 from . import icons, image_ops
@@ -16,7 +16,7 @@ from .draw_tools import MAX_THICKNESS_MM, MAX_RADIUS_MM
 
 PANEL_BTN = 32          # action buttons inside info panels
 MUTED = "color: #9a9a9a;"
-TOOL_LABELS = {"cut": "Cut", "draw": "Draw", "emboss": "Emboss"}   # GROUP_TOOLS -> UI text
+TOOL_LABELS = {"cut": "Cut", "draw": "Draw", "emboss": "Emboss", "skip": "Skip"}   # GROUP_TOOLS -> UI text
 MERGE_SETTING = "confirm/merge_color_groups"
 
 
@@ -462,7 +462,7 @@ class ColorKeyPanel(QtWidgets.QWidget):
         self.tool = QtWidgets.QComboBox()
         for t in GROUP_TOOLS:
             self.tool.addItem(QtGui.QIcon(icon_pixmap(t, 16)), TOOL_LABELS[t], t)
-        self.tool.setToolTip("Tool used for this color group")
+        self.tool.setToolTip("Tool used for this color group. Skip will leave the group out of the job.")
         self.tool.currentIndexChanged.connect(self._tool)
         form.addRow("Tool", self.tool)
         self.speed = QtWidgets.QComboBox()
@@ -526,7 +526,14 @@ class ColorKeyPanel(QtWidgets.QWidget):
         self.pause.blockSignals(True)
         self.pause.setChecked(bool(self.doc.pause_after.get(c)))
         self.pause.blockSignals(False)
+        self._sync_skip(cp.tool)
         self._loading = False
+
+    def _sync_skip(self, tool):
+        """A skipped group is not part of the job, so its job settings are greyed out."""
+        on = tool != SKIP_TOOL
+        for w in (self.speed, self.pres, self.map_check, self.curve, self.pause):
+            w.setEnabled(on)
 
     def _get_curve(self):
         c = self._color()
@@ -555,6 +562,7 @@ class ColorKeyPanel(QtWidgets.QWidget):
         if self._loading or not self._color():
             return
         self.doc.ensure_color(self._color()).tool = self.tool.itemData(i)
+        self._sync_skip(self.tool.itemData(i))
         self.changed.emit()
 
     def _speed(self, i):
@@ -663,6 +671,40 @@ class LinePanel(QtWidgets.QWidget):
             if off is not None:
                 p.dash_off_mm = max(0.1, off)
         self.changed.emit()
+
+
+class TabPanel(QtWidgets.QWidget):
+    """Properties of the selected tabs: the length of the gap that each tab leaves uncut."""
+    changed = QtCore.Signal()
+
+    def __init__(self, doc, parent=None):
+        super().__init__(parent)
+        self.doc = doc
+        lay = QtWidgets.QVBoxLayout(self)
+        self.title = QtWidgets.QLabel("")
+        lay.addWidget(self.title)
+        form = _form()
+        self.gap = MixedSpin(0.5, 2, TAB_GAP_MIN_MM, TAB_GAP_MAX_MM)
+        self.gap.setToolTip("Length of the uncut gap at the tab, in mm, measured along the line.\n"
+                            "The gap is centered on the tab.")
+        form.addRow("Gap (mm)", self.gap)
+        lay.addLayout(form)
+        self.apply = icon_button("apply", "Apply gap length", px=PANEL_BTN, scale=0.55)
+        self.apply.clicked.connect(self._apply)
+        self.gap.submitted.connect(self._apply)
+        lay.addLayout(_apply_row(self.apply))
+
+    def refresh(self):
+        tabs = self.doc.selected_tabs()
+        self.title.setText(plural(len(tabs), "tab") + " selected")
+        self.gap.set_values([t.gap_mm for t in tabs])
+
+    def _apply(self):
+        gap = self.gap.parsed()
+        if gap is None:
+            return
+        if self.doc.set_tab_gap(self.doc.selection.tabs, gap):
+            self.changed.emit()
 
 
 class PointPanel(QtWidgets.QWidget):

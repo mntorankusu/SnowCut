@@ -57,7 +57,8 @@ import os
 from collections import OrderedDict
 
 from PySide6 import QtWidgets, QtGui, QtCore
-from core.doc import combine_selection
+from core.doc import (combine_selection, subtract_spans, DEFAULT_TAB_GAP_MM, TAB_GAP_MIN_MM,
+                      TAB_GAP_MAX_MM)
 from core.pressure import quantized_runs
 from core import machine
 from core import mat as matlib
@@ -82,11 +83,14 @@ DEFAULT_BEND_STRENGTH = 0.5
 DEFAULT_BEND_FOCUS = 1.0
 PICK_PX = 3.0      # hit tolerance when nothing is exactly under the cursor
 
-TOOLS = ("mouse", "box", "zoom", "hand", "transform", "bend") + DRAW_TOOLS + (TYPE_TOOL,)
+TAB_PX = 20.0      # length of a tab's line across the path (screen px, any zoom)
+TAB_NODE_PX = 7.0  # tab nodes
+TAB_COLOR = "#ff5722"
+TOOLS = ("mouse", "box", "zoom", "hand", "transform", "bend", "tab") + DRAW_TOOLS + (TYPE_TOOL,)
 SCANBOX_TOOL = "scanbox"   # temporary tool of the Scan panel's Draw box (not in the toolbar)
 # DRAW_TOOLS (draw_tools.py) own Delete/Backspace/Enter/Esc/right-click (drawing sessions)
-CONTEXT_TOOLS = ("mouse", "box", "transform", "bend", TYPE_TOOL)
-PICK_RANK = {"handle": 0, "bhandle": 1, "point": 2, "seg": 3, "image": 4}   # lower wins
+CONTEXT_TOOLS = ("mouse", "box", "transform", "bend", "tab", TYPE_TOOL)
+PICK_RANK = {"handle": 0, "bhandle": 1, "point": 2, "tab": 2, "seg": 3, "image": 4}   # lower wins
 TOOL_HINTS = {
     "mouse": "Click to select, drag to move. Alt+click selects the whole object.",
     "box": "Drag a box to select.",
@@ -94,6 +98,7 @@ TOOL_HINTS = {
     "hand": "Drag to pan.",
     "transform": "Drag to move the selection, or drag a handle to resize it.",
     "bend": "Drag a line to bend it, or drag a handle to reshape. Hold Alt to move one handle only.",
+    "tab": "Click a line to add a tab. The line will not be cut where the tab is.",
     SCANBOX_TOOL: "Drag a box on the mat to set the scan area. Esc cancels.",
     TYPE_TOOL: TYPE_HINT,
 }
@@ -201,6 +206,7 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
         self._pending_click = None
         self._drag_kind = None  # None | pan | move_svg | resize | box | zoombox | move_geom | bhandle | bend
         self.nudge_mm = 1.0
+        self.tab_gap_mm = DEFAULT_TAB_GAP_MM   # gap of tabs added with the Tab tool
         self.bend_strength = DEFAULT_BEND_STRENGTH   # 0..1, see Doc.bend_segment_to
         self.bend_focus = DEFAULT_BEND_FOCUS         # 0..1, see Doc.bend_weights
         self._geom = None        # state of a move_geom / bhandle / bend drag (_drag_state)
@@ -265,6 +271,9 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
     def set_nudge_mm(self, v):
         self.nudge_mm = max(0.01, min(100.0, float(v)))
 
+    def set_tab_gap_mm(self, v):
+        self.tab_gap_mm = max(TAB_GAP_MIN_MM, min(TAB_GAP_MAX_MM, float(v)))
+
     def set_box_mode(self, mode):
         if mode in BOX_MODES and mode != self.box_mode:
             self.box_mode = mode
@@ -302,7 +311,7 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
             self.viewport().setCursor(QtCore.Qt.CrossCursor)
         elif self.tool == "hand":
             self.viewport().setCursor(QtCore.Qt.OpenHandCursor)
-        elif self.tool in ("box", "zoom", "bend") + DRAW_TOOLS:
+        elif self.tool in ("box", "zoom", "bend", "tab") + DRAW_TOOLS:
             self.viewport().setCursor(QtCore.Qt.CrossCursor)
         elif self.tool == TYPE_TOOL:
             self.viewport().setCursor(QtCore.Qt.IBeamCursor)
@@ -826,6 +835,7 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
         if cp is not None and not cp.use_thickness_map:
             cp = None   # only a thickness map splits a segment into pressure runs
         base = QtGui.QColor(p.color)
+        tab_gaps = d.tab_gaps(p) if p.tabs else {}
         for si in range(p.segment_count()):
             poly = d.segment_abs_poly(p, si)   # curves are flattened, straight = 2 points
             if ghost:
@@ -834,6 +844,10 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
                 self._add_seg_item(_poly_path([(x, y) for x, y, _t in poly]), pen, p.id, si, 2)
                 continue
             dashes = self._dash_spans(poly, p) if p.dash_enabled else None
+            if si in tab_gaps:   # the tab gaps are drawn like dash gaps
+                if dashes is None:
+                    dashes = [(0.0, _cumlen([(x, y) for x, y, _t in poly])[-1])]
+                dashes = subtract_spans(dashes, tab_gaps[si])
             run_s = 0.0   # runs are contiguous along the segment: arc length where this one starts
             for pq, pts, tm in self._thickness_runs(poly, cp):
                 col = QtGui.QColor(base)
@@ -854,6 +868,30 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
                     if b - a > 1e-9:
                         self._add_seg_item(_poly_path(_poly_slice(pts, cum, a, b)), pen, p.id, si, 2.1)
                 run_s += cum[-1]
+        for t in p.tabs:
+            self._draw_tab(p, t)
+
+    def _draw_tab(self, p, t):
+        """A tab: a thin line across the path at the tab, with a selectable node (kind "tab")
+        in its middle. The node is filled while the tab is selected."""
+        at = self.doc.tab_point(p, t)
+        if at is None:
+            return
+        x, y, ux, uy = at
+        h = self._px(TAB_PX) / 2
+        ln = self.scene.addLine(x - uy * h, y + ux * h, x + uy * h, y - ux * h,
+                                self._cosmetic_pen(TAB_COLOR, 1.0))
+        ln.setAcceptedMouseButtons(QtCore.Qt.NoButton)
+        ln.setData(2, "tabline")
+        ln.setZValue(9)
+        r = self._px(TAB_NODE_PX)
+        sel = (p.id, t.id) in self.doc.selection.tabs
+        dot = self.scene.addEllipse(x - r / 2, y - r / 2, r, r, self._cosmetic_pen(TAB_COLOR, 1.0),
+                                    QtGui.QBrush(QtGui.QColor(TAB_COLOR if sel else "#ffffff")))
+        dot.setData(0, p.id)
+        dot.setData(1, t.id)
+        dot.setData(2, "tab")
+        dot.setZValue(11)
 
     def _add_seg_item(self, qp, pen, pid, si, z):
         item = self.scene.addPath(qp, pen)
@@ -1110,7 +1148,8 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
     def _init_dispatch(self):
         self._tool_press = {"box": self._press_box, "zoom": self._press_zoom,
                             "mouse": self._press_select, "transform": self._press_select,
-                            "bend": self._press_bend, SCANBOX_TOOL: self._press_scanbox}
+                            "bend": self._press_bend, "tab": self._press_tab,
+                            SCANBOX_TOOL: self._press_scanbox}
         for t in DRAW_TOOLS:
             self._tool_press[t] = self._press_draw
         self._tool_press[TYPE_TOOL] = self._press_type
@@ -1245,7 +1284,7 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
     def _snap_selection(self):
         sel = self.doc.selection
         return (frozenset(sel.path_ids), frozenset(sel.segments),
-                frozenset(sel.points), frozenset(sel.svg_ids))
+                frozenset(sel.points), frozenset(sel.svg_ids), frozenset(sel.tabs))
 
     def mousePressEvent(self, ev):
         self.setFocus(QtCore.Qt.MouseFocusReason)   # arrow/Delete keys go to the canvas
@@ -1305,6 +1344,10 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
         if kind == "point":
             self._begin_geom("move_geom", sp, it, ev.modifiers(), point=(it.data(0), int(it.data(1))))
             return
+        if kind == "tab":   # tabs are only selected (a click), never dragged
+            self._drag_kind = None
+            self._pending_click = (it, ev.modifiers())
+            return
         if kind == "seg" and self._seg_selected(it.data(0), int(it.data(1))):
             self._begin_geom("move_geom", sp, it, ev.modifiers())
             return
@@ -1349,6 +1392,31 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
                 return
         self._drag_kind = None
         self._pending_click = (it, ev.modifiers())   # click on nothing / a point: plain select
+
+    def _press_tab(self, ev, sp):
+        """Tab tool: a click on a line attaches a new tab there and selects it. A click on a tab
+        node or on nothing selects as in the mouse tool."""
+        it = self._pick(ev.pos(), kinds=("tab", "seg"))
+        kind = self._item_kind(it) if it is not None else None
+        if kind == "seg" and not self._is_text_path(it.data(0)):
+            pid, si = it.data(0), int(it.data(1))
+            p = self.doc.paths.get(pid)
+            if p is not None and 0 <= si < p.segment_count():
+                pos, _dist = self.doc.nearest_pos_on_segment(p, si, sp.x(), sp.y())
+                tid = self.doc.add_tab(pid, si, pos, self.tab_gap_mm)
+                if tid is not None:
+                    self._drag_kind = None
+                    self._pending_click = None
+                    sel = self.doc.selection
+                    sel.clear()
+                    sel.tabs.add((pid, tid))
+                    self._after_edit("Added a tab")
+                    return
+        if kind == "seg":
+            self.status.emit("Text is rebuilt from its letters. Convert it to paths to add tabs.")
+            it = None
+        self._drag_kind = None
+        self._pending_click = (it, ev.modifiers())
 
     # -- geometry drags (move_geom / bhandle / bend share one dead-zone state in self._geom) --
     def _begin_geom(self, drag_kind, sp, it, mods, **extra):
@@ -1526,7 +1594,7 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
         pending = getattr(self, "_pending_click", None)
         self._pending_click = None
         self._press_scene = None
-        if self.tool in ("mouse", "transform", "bend") and pending is not None:
+        if self.tool in ("mouse", "transform", "bend", "tab") and pending is not None:
             it, mods = pending
             self._click_select(ev, it, mods)
 
@@ -1553,6 +1621,8 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
     # -- context menu (right click) --
     def _is_item_selected(self, kind, pid, sub):
         sel = self.doc.selection
+        if kind == "tab":
+            return (pid, sub) in sel.tabs
         p = self.doc.paths.get(pid)
         if p is None or p.svg_id in sel.svg_ids or pid in sel.path_ids:
             return True
@@ -1562,7 +1632,7 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
 
     def select_for_context(self, view_pos):
         """Right click: an unselected line / point under the cursor becomes the selection."""
-        it = self._pick(view_pos, kinds=("point", "seg", "image"))
+        it = self._pick(view_pos, kinds=("point", "tab", "seg", "image"))
         if it is None:
             return
         kind, pid, sub = it.data(2), it.data(0), it.data(1)
@@ -1580,6 +1650,8 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
         sel.clear()
         if kind == "point":
             sel.points.add((pid, int(sub)))
+        elif kind == "tab":
+            sel.tabs.add((pid, sub))
         else:
             sel.path_ids.add(pid)
         self._last_path_click = None
@@ -1772,8 +1844,8 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
         x0, y0 = self._box_origin
         rect = QtCore.QRectF(min(x0, sp.x()), min(y0, sp.y()), abs(sp.x() - x0), abs(sp.y() - y0))
         d = self.doc
-        paths, segs, pts, svgs = set(), set(), set(), set()
-        if self.box_mode == "points":
+        paths, segs, pts, svgs, tabs = set(), set(), set(), set(), set()
+        if self.box_mode == "points":   # tab nodes are picked like points
             for p in d.paths.values():
                 svg = d.svgs.get(p.svg_id)
                 if svg is not None and not svg.visible:
@@ -1781,6 +1853,10 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
                 for i, (x, y, _t) in enumerate(d.path_abs_points(p)):
                     if rect.contains(x, y):
                         pts.add((p.id, i))
+                for t in p.tabs:
+                    at = d.tab_point(p, t)
+                    if at is not None and rect.contains(at[0], at[1]):
+                        tabs.add((p.id, t.id))
         else:
             for item in self.scene.items(rect):
                 try:
@@ -1804,14 +1880,15 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
                     if bb and rect.contains(QtCore.QRectF(bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1])):
                         svgs.add(sid)
                         paths.difference_update(svg.path_ids)   # the object covers its outline paths
-        picked = (paths, segs, pts, svgs)
-        snap = self._sel_snapshot or (frozenset(), frozenset(), frozenset(), frozenset())
-        c_paths, c_segs, c_pts, c_svgs = combine_selection(snap, picked, self.select_mode)
+        picked = (paths, segs, pts, svgs, tabs)
+        snap = self._sel_snapshot or (frozenset(),) * 5
+        c_paths, c_segs, c_pts, c_svgs, c_tabs = combine_selection(snap, picked, self.select_mode)
         sel = d.selection
         sel.path_ids = set(c_paths)
         sel.segments = set(c_segs)
         sel.points = set(c_pts)
         sel.svg_ids = set(c_svgs)
+        sel.tabs = set(c_tabs)
         self.selection_changed.emit()
 
     def _zoom_to_box(self, sp):
@@ -1870,6 +1947,19 @@ class Canvas(DrawMixin, TextMixin, QtWidgets.QGraphicsView):
             if not shift:
                 sel.clear()
             sel.svg_ids.add(self.doc.paths[pid].svg_id)
+            self.selection_changed.emit()
+            return
+        if kind == "tab":   # tabs have no selection box: Shift / Ctrl always toggle
+            key = (pid, sub)
+            if shift or ctrl:
+                if key in sel.tabs:
+                    sel.tabs.discard(key)
+                else:
+                    sel.tabs.add(key)
+            else:
+                sel.clear()
+                sel.tabs.add(key)
+            self._last_path_click = None
             self.selection_changed.emit()
             return
         if not inside and not sel.is_empty():

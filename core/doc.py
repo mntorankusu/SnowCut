@@ -39,6 +39,8 @@ STEPS_Y_DEFAULT = 70.4
 DEFAULT_CURVE = [(0.0, -9), (2.0, 9)]  # thickness_mm -> pressure -9..9
 DEFAULT_DASH_ON_MM = 1.0
 DEFAULT_DASH_OFF_MM = 1.0
+DEFAULT_TAB_GAP_MM = 1.0
+TAB_GAP_MIN_MM, TAB_GAP_MAX_MM = 0.1, 100.0
 DEFAULT_THICKNESS = 1.0
 # Bend focus (Document.bend_weights): pressing beyond these fractions of a segment moves only
 # the nearer handle.
@@ -63,6 +65,17 @@ class ControlPoint:
 
 
 @dataclass
+class Tab:
+    """A gap in a line where the cut is interrupted, so the cut part stays attached to the
+    material. The gap is centered on the tab and measured along the line, in mm on the mat (like
+    dash lengths, not scaled with the object). It can reach into neighbouring segments."""
+    id: str
+    seg: int        # anchor segment of the path that the tab is attached to
+    pos: float      # place on that segment as a fraction of its length (0..1)
+    gap_mm: float = DEFAULT_TAB_GAP_MM
+
+
+@dataclass
 class VectorPath:
     id: str
     svg_id: str
@@ -74,9 +87,13 @@ class VectorPath:
     dash_on_mm: float = DEFAULT_DASH_ON_MM
     dash_off_mm: float = DEFAULT_DASH_OFF_MM
     generated: bool = False  # produced by an image outline: regenerated, not hand-edited
+    tabs: list = field(default_factory=list)  # list[Tab]
 
     def __post_init__(self):
         self.color = normalize_color(self.color)
+
+    def tab(self, tab_id):
+        return next((t for t in self.tabs if t.id == tab_id), None)
 
     def segment_count(self):
         n = len(self.points)
@@ -99,7 +116,7 @@ class ColorParams:
     use_thickness_map: bool = False  # toggled OFF by default
     curve: list = field(default_factory=lambda: [list(p) for p in DEFAULT_CURVE])
     blade: bool = True         # swivel-blade tool: gets blade compensation (False = pen etc.)
-    tool: str = "cut"          # GROUP_TOOLS: what the group is done with (UI only for now)
+    tool: str = "cut"          # GROUP_TOOLS: what the group is done with ("skip" = left out of the job)
     keep: bool = False         # created by the user: listed in the cut order even while empty
     # dash defaults per color are informational only. The actual dash is stored on paths.
     # They are kept so that a new path of this color could inherit them (v1: paths default to solid).
@@ -108,7 +125,8 @@ class ColorParams:
         self.color = normalize_color(self.color)
 
 
-GROUP_TOOLS = ("cut", "draw", "emboss")
+GROUP_TOOLS = ("cut", "draw", "emboss", "skip")
+SKIP_TOOL = "skip"         # a group with this tool is not cut, drawn or embossed
 
 # Colors handed out for new (empty) color groups, in order. The first one not in use wins.
 NEW_GROUP_COLORS = ("#E53935", "#1E88E5", "#43A047", "#FB8C00", "#8E24AA", "#00ACC1",
@@ -307,6 +325,40 @@ def _split_runs(p, sel):
     return [(f, False, [segs[0]] + [(j + 1) % n for j in segs]) for f, segs in groups]
 
 
+def _piece_tabs(p, idxs, closed, rm=()):
+    """Copies of p's tabs for a piece made of the anchors p.points[idxs] (anchors in rm are
+    removed). A tab is kept when its segment survives unchanged, and it is moved to that
+    segment's index in the piece. Tabs on joined or removed segments are dropped."""
+    if not p.tabs:
+        return []
+    n = len(p.points)
+    kept = [i for i in idxs if i not in rm]
+    m = len(kept) if closed else len(kept) - 1
+    where = {}
+    for k in range(max(m, 0)):
+        a, b = kept[k], kept[(k + 1) % len(kept)]
+        if b == (a + 1) % n:
+            where[a] = k
+    return [replace(t, seg=where[t.seg]) for t in p.tabs if t.seg in where]
+
+
+def subtract_spans(spans, gaps):
+    """Parts of the sorted intervals `spans` outside the sorted, merged intervals `gaps`."""
+    out = []
+    for a, b in spans:
+        for g0, g1 in gaps:
+            if g1 <= a or g0 >= b:
+                continue
+            if g0 - a > 1e-9:
+                out.append((a, g0))
+            a = max(a, g1)
+            if a >= b:
+                break
+        if b - a > 1e-9:
+            out.append((a, b))
+    return out
+
+
 def _remove_anchors(idxs, pts, closed, rm):
     """Drop anchors whose original index is in rm. Neighbours get a straight joining segment."""
     k, out = len(idxs), []
@@ -327,15 +379,17 @@ class Selection:
     segments: set = field(default_factory=set)  # (path_id, seg_idx)
     points: set = field(default_factory=set)    # (path_id, pt_idx)
     svg_ids: set = field(default_factory=set)   # entire-SVG selection
+    tabs: set = field(default_factory=set)      # (path_id, tab_id)
 
     def clear(self):
         self.path_ids.clear()
         self.segments.clear()
         self.points.clear()
         self.svg_ids.clear()
+        self.tabs.clear()
 
     def is_empty(self):
-        return not (self.path_ids or self.segments or self.points or self.svg_ids)
+        return not (self.path_ids or self.segments or self.points or self.svg_ids or self.tabs)
 
     def has_geometry(self):
         """Any line/path-level content (paths, segments, or svg selections)."""
@@ -344,7 +398,8 @@ class Selection:
         return False
 
     def single_path_id(self):
-        if len(self.path_ids) == 1 and not self.segments and not self.points and not self.svg_ids:
+        if (len(self.path_ids) == 1 and not self.segments and not self.points and not self.svg_ids
+                and not self.tabs):
             return next(iter(self.path_ids))
         return None
 
@@ -535,6 +590,7 @@ class Document:
         self.selection.path_ids = {p for p in self.selection.path_ids if p in self.paths}
         self.selection.segments = {(p, i) for (p, i) in self.selection.segments if p in self.paths}
         self.selection.points = {(p, i) for (p, i) in self.selection.points if p in self.paths}
+        self.selection.tabs = {(p, t) for (p, t) in self.selection.tabs if p in self.paths}
 
     def _xf(self, path):
         """Xf of the path's svg (identity if orphaned)."""
@@ -652,6 +708,143 @@ class Document:
             if d < best[1]:
                 best = (u0 + (u1 - u0) * s, d)
         return best
+
+    # -- tabs --
+    @staticmethod
+    def _arc_table(poly):
+        """Cumulative arc length (mm) at each vertex of a flattened polyline."""
+        cum = [0.0]
+        for a, b in zip(poly, poly[1:]):
+            cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+        return cum
+
+    def nearest_pos_on_segment(self, path, i, x, y):
+        """(pos, dist_mm): the point of segment i nearest abs (x, y) as a fraction of the
+        segment's length (Tab.pos), and its distance."""
+        poly = self.segment_abs_poly(path, i)
+        cum = self._arc_table(poly)
+        best = (0.0, float("inf"))
+        for k, (a, b) in enumerate(zip(poly, poly[1:])):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L2 = dx * dx + dy * dy
+            s = 0.0 if L2 == 0 else max(0.0, min(1.0, ((x - a[0]) * dx + (y - a[1]) * dy) / L2))
+            d = math.hypot(x - (a[0] + dx * s), y - (a[1] + dy * s))
+            if d < best[1]:
+                best = (cum[k] + (cum[k + 1] - cum[k]) * s, d)
+        total = cum[-1]
+        return (best[0] / total if total > 1e-12 else 0.0), best[1]
+
+    def tab_point(self, path, tab):
+        """(x, y, ux, uy): abs mm position of the tab and the unit direction of the line there,
+        or None when the tab is not on a segment of the path."""
+        if not 0 <= tab.seg < path.segment_count():
+            return None
+        poly = self.segment_abs_poly(path, tab.seg)
+        cum = self._arc_table(poly)
+        L = cum[-1]
+
+        def at(s):
+            for k in range(len(poly) - 1):
+                if s <= cum[k + 1] or k == len(poly) - 2:
+                    el = cum[k + 1] - cum[k]
+                    f = 0.0 if el <= 1e-12 else max(0.0, min(1.0, (s - cum[k]) / el))
+                    a, b = poly[k], poly[k + 1]
+                    return a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f
+            return poly[0][0], poly[0][1]
+        s = max(0.0, min(1.0, tab.pos)) * L
+        x, y = at(s)
+        # the direction over a short stretch around the tab, so that a tab on a vertex of the
+        # flattened curve follows the curve and not one of the two chords
+        h = min(0.05, L / 2)
+        (x0, y0), (x1, y1) = at(max(0.0, s - h)), at(min(L, s + h))
+        d = math.hypot(x1 - x0, y1 - y0)
+        if d <= 1e-12:
+            return (x, y, 1.0, 0.0)  # a segment of zero length
+        return (x, y, (x1 - x0) / d, (y1 - y0) / d)
+
+    def tab_gaps(self, path):
+        """{segment index: [(s0, s1), ...]}: the parts of each segment that tabs leave uncut, as
+        sorted, merged arc-length intervals in mm from the segment start (along
+        segment_abs_poly). A gap is centered on its tab. It runs on into the neighbouring
+        segments, wraps around a closed path and ends at an open path's ends."""
+        m = path.segment_count()
+        if not path.tabs or m == 0:
+            return {}
+        lens = [self._arc_table(self.segment_abs_poly(path, i))[-1] for i in range(m)]
+        starts = [0.0]
+        for L in lens:
+            starts.append(starts[-1] + L)
+        total = starts[-1]
+        if total <= 1e-9:
+            return {}
+        spans = []  # arc-length intervals on the whole path
+        for t in path.tabs:
+            if not 0 <= t.seg < m:
+                continue
+            c = starts[t.seg] + max(0.0, min(1.0, t.pos)) * lens[t.seg]
+            h = max(0.0, t.gap_mm) / 2
+            if h <= 0:
+                continue
+            a, b = c - h, c + h
+            if not path.closed:
+                spans.append((max(a, 0.0), min(b, total)))
+            elif b - a >= total:
+                spans.append((0.0, total))
+            else:
+                if a < 0:
+                    spans.append((a + total, total))
+                    a = 0.0
+                if b > total:
+                    spans.append((0.0, b - total))
+                    b = total
+                spans.append((a, b))
+        out = {}
+        for i in range(m):
+            s0, s1 = starts[i], starts[i + 1]
+            parts = sorted((max(a, s0) - s0, min(b, s1) - s0) for a, b in spans
+                           if min(b, s1) - max(a, s0) > 1e-9)
+            merged = []
+            for a, b in parts:
+                if merged and a <= merged[-1][1] + 1e-9:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+                else:
+                    merged.append((a, b))
+            if merged:
+                out[i] = merged
+        return out
+
+    def add_tab(self, pid, seg, pos, gap_mm=DEFAULT_TAB_GAP_MM):
+        """Attach a new tab to segment seg of path pid at pos (fraction of the segment length).
+        Returns its id, or None when the path or segment does not exist."""
+        p = self.paths.get(pid)
+        if p is None or not 0 <= seg < p.segment_count():
+            return None
+        t = Tab(id=new_id("tab"), seg=int(seg), pos=max(0.0, min(1.0, float(pos))),
+                gap_mm=max(TAB_GAP_MIN_MM, min(TAB_GAP_MAX_MM, float(gap_mm))))
+        p.tabs.append(t)
+        return t.id
+
+    def selected_tabs(self):
+        """The selected Tab objects, in a stable order."""
+        out = []
+        for pid, tid in sorted(self.selection.tabs):
+            p = self.paths.get(pid)
+            t = p.tab(tid) if p else None
+            if t is not None:
+                out.append(t)
+        return out
+
+    def set_tab_gap(self, refs, gap_mm):
+        """Set the gap length (mm) of the tabs refs [(path_id, tab_id)]. Returns how many changed."""
+        g = max(TAB_GAP_MIN_MM, min(TAB_GAP_MAX_MM, float(gap_mm)))
+        n = 0
+        for pid, tid in refs:
+            p = self.paths.get(pid)
+            t = p.tab(tid) if p else None
+            if t is not None and t.gap_mm != g:
+                t.gap_mm = g
+                n += 1
+        return n
 
     def svg_bbox(self, svg_id):
         """Abs-mm bbox (xmin, ymin, xmax, ymax) of flattened geometry (plus the raster rect for
@@ -780,18 +973,18 @@ class Document:
                 self.delete_svg(sid)
 
     def _replace_path(self, p, pieces):
-        """Swap path p for open/closed pieces [(closed, points)] at the same z-position
+        """Swap path p for open/closed pieces [(closed, points, tabs)] at the same z-position
         (the first keeps p's id, and no pieces removes it)."""
         s = self.svgs.get(p.svg_id)
         ids = s.path_ids if s else None
         pos = ids.index(p.id) if ids is not None and p.id in ids else None
         self.paths.pop(p.id, None)
         new_ids = []
-        for k, (closed, pts) in enumerate(pieces):
+        for k, (closed, pts, tabs) in enumerate(pieces):
             if k == 0:  # keep the object identity of the original
-                p.points, p.closed, q = pts, closed, p
+                p.points, p.closed, p.tabs, q = pts, closed, tabs, p
             else:
-                q = replace(p, id=new_id("path"), points=pts, closed=closed)
+                q = replace(p, id=new_id("path"), points=pts, closed=closed, tabs=tabs)
             self.paths[q.id] = q
             new_ids.append(q.id)
         if ids is not None:
@@ -1074,11 +1267,12 @@ class Document:
             keep = []
             for sel_run, closed, idxs in runs:
                 pts = _copy_pts(p, idxs, closed)
+                tabs = _piece_tabs(p, idxs, closed)
                 if not sel_run:
-                    keep.append((closed, pts))
+                    keep.append((closed, pts, tabs))
                     continue
                 q = replace(p, id=new_id("path"), svg_id=new_svg, closed=closed, generated=False,
-                            points=self._reframe(pts, xf, Xf()))
+                            points=self._reframe(pts, xf, Xf()), tabs=tabs)
                 self.paths[q.id] = q
                 self.svgs[new_svg].path_ids.append(q.id)
             self._replace_path(p, keep)
@@ -1137,11 +1331,15 @@ class Document:
         return target
 
     def delete_selection(self):
-        """Delete selected svgs, paths, segments (splitting paths) and points (joining
-        neighbours). Returns True if anything was deleted."""
+        """Delete selected svgs, paths, segments (splitting paths), points (joining
+        neighbours) and tabs. Returns True if anything was deleted."""
         sel = self.selection
         if sel.is_empty():
             return False
+        for pid, tid in sel.tabs:
+            p = self.paths.get(pid)
+            if p is not None:
+                p.tabs = [t for t in p.tabs if t.id != tid]
         for sid in list(sel.svg_ids):
             self.delete_svg(sid)
         segs, pts = {}, {}
@@ -1168,7 +1366,7 @@ class Document:
                     continue
                 cps = _remove_anchors(idxs, _copy_pts(p, idxs, closed), closed, P)
                 if len(cps) >= 2:
-                    pieces.append((closed, cps))
+                    pieces.append((closed, cps, _piece_tabs(p, idxs, closed, P)))
             self._replace_path(p, pieces)
         self._drop_empty(touched)
         sel.clear()
@@ -1338,6 +1536,7 @@ class Document:
         sel.path_ids = {q for q in sel.path_ids if q in self.paths}
         sel.segments = {(q, i) for (q, i) in sel.segments if q in self.paths}
         sel.points = {(q, i) for (q, i) in sel.points if q in self.paths}
+        sel.tabs = {(q, t) for (q, t) in sel.tabs if q in self.paths}
         for loop in loops_local_mm:
             if len(loop) < 3:
                 continue
@@ -1401,6 +1600,8 @@ class Document:
              "pts": [pt_json(pt) for pt in p.points]}
         if p.generated:
             d["gen"] = True
+        if p.tabs:
+            d["tabs"] = [{"id": t.id, "seg": t.seg, "pos": t.pos, "gap": t.gap_mm} for t in p.tabs]
         return d
 
     @staticmethod
@@ -1463,7 +1664,12 @@ class Document:
                                             dash_enabled=p.get("dash_enabled", False),
                                             dash_on_mm=p.get("dash_on", DEFAULT_DASH_ON_MM),
                                             dash_off_mm=p.get("dash_off", DEFAULT_DASH_OFF_MM),
-                                            generated=p.get("gen", False))
+                                            generated=p.get("gen", False),
+                                            tabs=[Tab(id=str(t.get("id") or new_id("tab")),
+                                                      seg=int(t.get("seg", 0)),
+                                                      pos=float(t.get("pos", 0.5)),
+                                                      gap_mm=float(t.get("gap", DEFAULT_TAB_GAP_MM)))
+                                                  for t in p.get("tabs", [])])
         return doc
 
     def restore_dict(self, d):
@@ -1479,14 +1685,16 @@ class Document:
 
     # -- selection snapshots (undo/redo) --
     def selection_state(self):
-        """Immutable copy of the selection: (path_ids, segments, points, svg_ids) frozensets."""
+        """Immutable copy of the selection: (path_ids, segments, points, svg_ids, tabs) frozensets."""
         s = self.selection
         return (frozenset(s.path_ids), frozenset(s.segments), frozenset(s.points),
-                frozenset(s.svg_ids))
+                frozenset(s.svg_ids), frozenset(s.tabs))
 
     def set_selection_state(self, state):
-        """Select `state` (as returned by selection_state), dropping ids/indices that do not exist."""
-        paths, segs, pts, svgs = state
+        """Select `state` (as returned by selection_state), dropping ids/indices that do not exist.
+        A state without the tabs entry (the older 4-tuple) selects no tabs."""
+        paths, segs, pts, svgs = state[:4]
+        tabs = state[4] if len(state) > 4 else ()
         s = self.selection
 
         def idx_ok(key):
@@ -1500,6 +1708,8 @@ class Document:
         s.points.update(k for k in pts if idx_ok(k))
         s.svg_ids.clear()
         s.svg_ids.update(v for v in svgs if v in self.svgs)
+        s.tabs.clear()
+        s.tabs.update(k for k in tabs if k[0] in self.paths and self.paths[k[0]].tab(k[1]) is not None)
 
     # -- embedded data --
     def add_blob(self, data, ext):

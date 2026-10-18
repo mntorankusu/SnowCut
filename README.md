@@ -26,7 +26,18 @@ From a release, extract the zip file and run SnowCut.exe.
 1. Connect the machine to the PC with a USB printer cable (B to A) and turn it on. The USB-B port is directly below the USB-A port on the side of the machine. There may be a removable flush cover hiding it.
 2. Start SnowCut. When it starts, it will attempt to detect a CM110 connected to your computer.
 3. If the machine is detected, SnowCut will ask to connect with administrator rights. Accept the prompt so it can communicate with the machine. You can also do this later from **Machine > Connect with Administrator Rights**.
-4. Follow the prompt to choose an original `.upf` file. SnowCut will save a patched copy that you can copy to a USB flash drive and install on the machine using its normal update procedure. The firmware tools are also available in **Machine > Machine Settings**. Find the original firmware on the manufacturer's website. Supported firmware versions are `SNC00D0V1819W.upf` (Japan) and `SNC0001V1819W.upf` (North America). If your CM110 machine uses a different firmware region, post an issue here and I will attempt to add it to the list of compatible versions.
+4. Follow the prompt to choose an original `.upf` file. SnowCut will save a patched copy that you can copy to a USB flash drive and install on the machine using its normal update procedure. The firmware tools are also available in **Machine > Machine Settings**. Find the original firmware on the manufacturer's website. Known supported firmware files (version 1819 only):
+
+   | Models | File |
+   | CM100DM, CM110, CM600 |  `SNC0001V1819W.upf` | 
+   | CM550, CM840 |  `SNC0003V1819W.upf` | 
+   | CM250 | `SNC0004V1819W.upf` |
+   | CM300, CM260 | `SNC0011V1819W.upf` |
+   | CM110 (Japan) |   `SNC00D0V1819W.upf`  |
+   | CM300 (Japan) | `SNC00D2V1819W.upf` |
+   | --- | --- |
+
+   The same model can have a different name in another region, so I recommend looking for the correct update for your actual machine, and see if the filename matches one of these. The machine will refuse to update if the `SNCXXXX` code doesn't match. Version 1820, which some European models received, is not supported. If you're already using version 1820, you can attempt to downgrade to 1819 if you can find the correct file for your machine, but this has not been tested. All of the 1819 firmware versions contain the exact same program code, but SnowCut has only been tested on a Japanese CM110. While it seems very likely that all of the machines listed here will work correctly with SnowCut, it can not be guaranteed. If you have a machine that is on version 1819 and it's not listed here, post an issue with the model information and I'll try to add it to the supported machines.
 
 ## Basic workflow
 

@@ -18,7 +18,7 @@ Two kinds of panel:
 import os
 import sys
 from PySide6 import QtWidgets, QtGui, QtCore
-from core.doc import Document, PROJECT_EXT
+from core.doc import Document, PROJECT_EXT, TAB_GAP_MIN_MM, TAB_GAP_MAX_MM
 from core import userdata
 from core.history import History, DEFAULT_UNDO_LEVELS, clamp_levels, doc_json
 from core.svg_import import import_svg
@@ -36,7 +36,7 @@ from device.usb_motion import MotionSender, _fw_dev, _fw_motion, _fw_close, _fw_
 from .canvas import Canvas, DEFAULT_BEND_STRENGTH, DEFAULT_BEND_FOCUS
 from .draw_tools import DRAW_TOOLS, MAX_THICKNESS_MM, MAX_RADIUS_MM
 from . import text_ops
-from .panels import (ObjectsPanel, CutOrderPanel, ColorKeyPanel, LinePanel, PointPanel, SvgPanel,
+from .panels import (ObjectsPanel, CutOrderPanel, ColorKeyPanel, LinePanel, PointPanel, TabPanel, SvgPanel,
                      DeviceControlPanel, JogPanel, CutSettingsPanel, mm_spin, group_choices)
 from .cut_panel import CutPanel, CodePreviewPanel
 from .color_picker import ColorPicker
@@ -480,13 +480,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 ("colorkey", "Color Group Properties", None),  # needs a getter, built below
                 ("line", "Line Properties", LinePanel(self.doc)),
                 ("point", "Point Properties", PointPanel(self.doc)),
+                ("tab", "Tab Properties", TabPanel(self.doc)),
                 ("svg", "SVG Properties", SvgPanel(self.doc))]
         self.objects_panel, self.cutorder_panel = defs[0][2], defs[1][2]
         self.colorkey_panel = ColorKeyPanel(self.doc, self._display_color)
-        self.line_panel, self.point_panel, self.svg_panel = defs[3][2], defs[4][2], defs[5][2]
+        self.line_panel, self.point_panel = defs[3][2], defs[4][2]
+        self.tab_panel, self.svg_panel = defs[5][2], defs[6][2]
         panels = {"objects": self.objects_panel, "cutorder": self.cutorder_panel,
                   "colorkey": self.colorkey_panel, "line": self.line_panel,
-                  "point": self.point_panel, "svg": self.svg_panel}
+                  "point": self.point_panel, "tab": self.tab_panel, "svg": self.svg_panel}
         titles = {pid: title for pid, title, _p in defs}
         self._info_panels = panels
         self._panel_dirty = set()      # hidden panels skipped by refresh_all
@@ -1005,6 +1007,7 @@ class MainWindow(QtWidgets.QMainWindow):
                           ("hand", "Pan (or hold Space)"),
                           ("transform", "Move and resize"),
                           ("bend", "Bend"),
+                          ("tab", "Tab"),
                           ("line", "Line"),
                           ("freehand", "Freehand"),
                           ("curve", "Pen"),
@@ -1188,6 +1191,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tool_pages["bend"] = self._flow_page(
             [QtWidgets.QLabel("Pull"), self.bend_slider, self.bend_value, DIV,
              QtWidgets.QLabel("Focus"), self.focus_slider, self.focus_value])
+        self.tab_gap_spin = mm_spin(TAB_GAP_MIN_MM, TAB_GAP_MAX_MM, 0.5, 2, self.canvas.tab_gap_mm,
+                                    "Gap length of new tabs, measured along the line")
+        self.tab_gap_spin.valueChanged.connect(self.canvas.set_tab_gap_mm)
+        self.tab_gap_spin.setFixedWidth(2 * ICON_PX + ICON_GAP)  # two grid cells
+        self.tab_gap_spin.setSuffix("")   # the label carries the unit
+        self._tool_pages["tab"] = self._flow_page([QtWidgets.QLabel("Gap (mm)"), self.tab_gap_spin])
         self._tool_pages["scanbox"] = self._flow_page(
             [self._muted_label("Drawing the scan area")])
         self._build_draw_pages()
@@ -2061,11 +2070,13 @@ class MainWindow(QtWidgets.QMainWindow):
         d = self.doc
         d.promote_text_selection()     # text objects are selected whole
         rules = {
-            "objects": not bool(d.selection.path_ids or d.selection.segments or d.selection.points),
+            "objects": not bool(d.selection.path_ids or d.selection.segments or d.selection.points
+                                 or d.selection.tabs),
             "cutorder": True,
             "colorkey": (not d.selection.is_empty()) or bool(self.cutorder_panel.active_key),
             "line": bool(d.selection.path_ids or d.selection.segments or d.selection.svg_ids),
             "point": _has_point_refs(d),
+            "tab": bool(d.selection.tabs),
             "svg": bool(d.svg_ids_for_selection()),
         }
         self._in_rules = True  # the refresh loop below covers cards shown here

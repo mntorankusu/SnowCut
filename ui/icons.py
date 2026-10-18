@@ -32,6 +32,7 @@ ICONS = {
     "hand": "five-five",                 # open hand
     "transform": "moving-picture",       # move/resize the picture
     "bend": "curve-adjustment",          # drag a line into a curve
+    "tab": "link-break",                 # tab tool: a gap left uncut in a line
     "line": "draw-line",                 # straight line between two nodes (custom, iconpark1)
     "freehand": "writing-fluently",      # pencil scribbling a squiggle
     "curve": "electronic-pen",           # pen tool (bezier anchors)
@@ -75,6 +76,7 @@ ICONS = {
     "cut": "cutting-one",
     "draw": "pencil",
     "emboss": "stamp",
+    "skip": "forbid",                    # color group left out of the job
     "scan": "add-picture",
     "jog": "direction-adjustment",
     "load_scan": "picture-album",

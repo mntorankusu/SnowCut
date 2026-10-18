@@ -9,10 +9,13 @@ Pressure resolution per sub-segment:
   - else None (machine setting: M3 sent without value / default down)
 Speed: color.speed None -> omit F, else 0..9 feed.
 Dash: dash_enabled splits each edge into on/off runs in mm (perforation).
+Tabs: every tab of a path leaves its gap uncut (the tool is lifted over it).
+Color groups whose tool is "skip" produce no ops at all (no color marker, strokes or pause).
 """
 from __future__ import annotations
 import math
 from .pressure import quantized_runs, thickness_to_pressure
+from .doc import SKIP_TOOL, subtract_spans
 
 
 def _pressure_for(cp, thickness):
@@ -94,11 +97,93 @@ def _dash_segment_ops(ops, poly, p, cp, cur_pres, tool_down):
     return cur_pres, tool_down
 
 
+def _tabbed_path_ops(ops, doc, p, cp):
+    """Ops for a path with tabs: every segment is cut except the tab gaps (and the dash gaps,
+    when the path is dashed). Without dashes, cut pieces that meet at an anchor are one stroke,
+    and a closed path starts after a gap, so that the line is cut in as few strokes as possible."""
+    gaps = doc.tab_gaps(p)
+    dashed = p.dash_enabled and p.dash_on_mm + p.dash_off_mm > 1e-9
+    m = p.segment_count()
+    tables = []
+    pieces = []  # (segment, arc_a, arc_b, reaches_segment_end)
+    for si in range(m):
+        poly = doc.segment_abs_poly(p, si)
+        cum = doc._arc_table(poly)
+        L = cum[-1]
+        tables.append((poly, cum))
+        if L <= 1e-9:
+            continue
+        if dashed:
+            period = p.dash_on_mm + p.dash_off_mm
+            spans, s = [], 0.0
+            while s < L - 1e-9:
+                spans.append((s, min(s + p.dash_on_mm, L)))
+                s += period
+        else:
+            spans = [(0.0, L)]
+        for a, b in subtract_spans(spans, gaps.get(si, [])):
+            pieces.append((si, a, b, b >= L - 1e-9))
+    if not pieces:
+        return
+    # strokes: runs of pieces that continue across an anchor (never for dashes, which lift
+    # after every dash like the untabbed dash cut)
+    strokes = []
+    for pc in pieces:
+        prev = strokes[-1][-1] if strokes else None
+        if (not dashed and prev is not None and prev[3] and pc[1] <= 1e-9
+                and pc[0] == prev[0] + 1):
+            strokes[-1].append(pc)
+        else:
+            strokes.append([pc])
+    if (p.closed and not dashed and len(strokes) > 1 and strokes[-1][-1][3]
+            and strokes[-1][-1][0] == m - 1 and strokes[0][0][0] == 0 and strokes[0][0][1] <= 1e-9):
+        strokes[0] = strokes.pop() + strokes[0]  # the cut runs on through the start anchor
+
+    def at(si, s):
+        """(x, y, thickness) at arc s of segment si."""
+        poly, cum = tables[si]
+        for k in range(len(poly) - 1):
+            if s <= cum[k + 1] or k == len(poly) - 2:
+                el = cum[k + 1] - cum[k]
+                f = 0.0 if el <= 1e-12 else max(0.0, min(1.0, (s - cum[k]) / el))
+                a, b = poly[k], poly[k + 1]
+                return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f)
+        return poly[0]
+
+    for stroke in strokes:
+        si0, s0 = stroke[0][0], stroke[0][1]
+        x, y, th = at(si0, s0)
+        ops.append(("rapid", x, y))
+        cur_pres = _pressure_for(cp, th)
+        ops.append(("down", cur_pres))
+        for si, sa, sb, _end in stroke:
+            poly, cum = tables[si]
+            # the piece's own vertices: its ends plus every polyline vertex strictly inside
+            stops = [sa] + [c for c in cum[1:-1] if sa + 1e-9 < c < sb - 1e-9] + [sb]
+            prev = at(si, sa)
+            for s in stops[1:]:
+                nxt = at(si, s)
+                if cp.use_thickness_map:
+                    for _q0, q1, pq in quantized_runs(prev[2], nxt[2], cp.curve):
+                        ex = prev[0] + (nxt[0] - prev[0]) * q1
+                        ey = prev[1] + (nxt[1] - prev[1]) * q1
+                        if pq != cur_pres:
+                            ops.append(("down", pq))
+                            cur_pres = pq
+                        ops.append(("cut", ex, ey, cp.speed, pq))
+                else:
+                    ops.append(("cut", nxt[0], nxt[1], cp.speed, cp.pressure))
+                prev = nxt
+        ops.append(("up",))
+
+
 def plan_ops_flat(doc):
     """Materialized op list with dash-gap up/down + quantized pressure splits."""
     ops = []
     for color in doc.ordered_colors():
         cp = doc.color_params[color]
+        if cp.tool == SKIP_TOOL:
+            continue  # the user left this group out of the job
         ops.append(("color", color))
         for p in [q for q in doc.paths.values() if q.color == color]:
             svg = doc.svgs.get(p.svg_id)
@@ -106,6 +191,9 @@ def plan_ops_flat(doc):
                 continue  # hidden SVGs are not cut
             pts = doc.path_abs_flat(p)  # curves flattened, and closed paths omit the repeated start
             if len(pts) < 2:
+                continue
+            if p.tabs:
+                _tabbed_path_ops(ops, doc, p, cp)
                 continue
             ops.append(("rapid", pts[0][0], pts[0][1]))
             first_pres = _pressure_for(cp, pts[0][2])

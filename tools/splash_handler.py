@@ -25,8 +25,11 @@ SEG5_FLASH_BASE     = 0x84600000      # seg5 base in flash
 BLOCK_FLASH_ADDR    = 0x8495328A      # flash address of the compressed block header
 BLOCK_SEG5_OFFSET   = BLOCK_FLASH_ADDR - SEG5_FLASH_BASE  # 0x35328A
 BLOCK_PAYLOAD_OFFSET = SEG5_PAYLOAD_OFFSET + BLOCK_SEG5_OFFSET # 0x6F328A
-SEG5_SIZE           = 0x500000        # 5 MB
-MAX_BLOCK_SPAN      = SEG5_SIZE - BLOCK_SEG5_OFFSET  # 0x1ACD76 (1,756,534 bytes)
+# The models share the code but not seg5: the CM110 (SNC0001/00D0) has a 5 MB seg5, the
+# CM250 (SNC0004) 5.25 MB and the CM550 (SNC0003) 5.5 MB, with more groups in the block.
+# The block offset, the group table offset and the seg5 size are therefore read from
+# the file (block_offset, group_table, apply_splash_replacements), not from the
+# constants above, which only describe the CM110.
 
 # Group 0xC9 screen resolution
 EXPECTED_DIMS_0xC9 = (432, 240)
@@ -151,32 +154,61 @@ def scan_replacement_dir(directory: str) -> Dict[Tuple[int, int], Tuple[str, byt
     return replacements
 
 
+def block_offset(payload: bytearray) -> int:
+    """UPF payload offset of the compressed block header. The first word of seg5
+    (little-endian) holds the offset of the block within seg5."""
+    off = SEG5_PAYLOAD_OFFSET + struct.unpack_from("<I", payload, SEG5_PAYLOAD_OFFSET)[0]
+    if not SEG5_PAYLOAD_OFFSET < off <= len(payload) - 12 or             struct.unpack_from(">I", payload, off)[0] != 0xC:
+        raise RuntimeError("seg5 does not point at a compressed image block")
+    return off
+
+
 def extract_uncompressed_block(payload: bytearray) -> Tuple[bytes, int, int]:
     """Extract and decompress the flash block from seg5 in the UPF payload."""
-    hdr_size, usize, csize = struct.unpack_from(">III", payload, BLOCK_PAYLOAD_OFFSET)
-    stream = payload[BLOCK_PAYLOAD_OFFSET + hdr_size : BLOCK_PAYLOAD_OFFSET + hdr_size + csize]
+    off = block_offset(payload)
+    hdr_size, usize, csize = struct.unpack_from(">III", payload, off)
+    stream = payload[off + hdr_size : off + hdr_size + csize]
     data = zlib.decompressobj(-15).decompress(stream, usize)
     if len(data) != usize:
         raise RuntimeError(f"Deflate stream inflated to {len(data)} bytes, expected {usize}")
     return bytes(data), usize, csize
 
 
-def repack_uncompressed_block(data: bytes, replacements: Dict[Tuple[int, int], bytes]) -> bytes:
-    """Replace target images in the uncompressed block and rebuild group tables and descriptors."""
-    count = struct.unpack_from("<H", data, 0x70)[0]
-    pos = 0x72 + 8 * count
-
+def group_table(data: bytes) -> Tuple[int, list]:
+    """(table, [(grp, n, pos, size)]) of the uncompressed block. The first word of the
+    block holds the offset of the group table (a u16 count, then one <HHI entry per
+    group), and the group data follows the table in the same order. The offset differs
+    per model: 0x70 on the CM110, 0x84 on the CM250 and 0x90 on the CM550."""
+    table = struct.unpack_from("<I", data, 0)[0]
+    count = struct.unpack_from("<H", data, table)[0]
+    pos = table + 2 + 8 * count
     groups = []
     for k in range(count):
-        grp, n, size = struct.unpack_from("<HHI", data, 0x72 + 8 * k)
-        groups.append({
-            "grp": grp,
-            "n": n,
-            "pos": pos,
-            "size": size,
-            "data": data[pos : pos + size],
-        })
+        grp, n, size = struct.unpack_from("<HHI", data, table + 2 + 8 * k)
+        groups.append((grp, n, pos, size))
         pos += size
+    if pos != len(data):
+        raise RuntimeError("image block groups end at %#x, the block is %#x bytes" % (pos, len(data)))
+    return table, groups
+
+
+def group_record(data: bytes, grp: int, idx: int) -> bytes:
+    """Image bytes of record `idx` in group `grp` of the uncompressed block."""
+    for g, n, pos, _size in group_table(data)[1]:
+        if g == grp:
+            if not 0 <= idx < n:
+                raise KeyError("group %#x has no record %d" % (grp, idx))
+            rec = pos + struct.unpack_from("<I", data, pos + 4 * idx)[0]
+            sz = struct.unpack_from("<I", data, rec)[0]
+            return bytes(data[rec + 12 : rec + 12 + sz])
+    raise KeyError("no group %#x in the image block" % grp)
+
+
+def repack_uncompressed_block(data: bytes, replacements: Dict[Tuple[int, int], bytes]) -> bytes:
+    """Replace target images in the uncompressed block and rebuild group tables and descriptors."""
+    table, entries = group_table(data)
+    groups = [{"grp": grp, "n": n, "pos": pos, "size": size, "data": data[pos : pos + size]}
+              for grp, n, pos, size in entries]
 
     # Update groups that have replacements
     new_groups = []
@@ -224,7 +256,7 @@ def repack_uncompressed_block(data: bytes, replacements: Dict[Tuple[int, int], b
         })
 
     # Assemble new uncompressed block
-    out_hdr = bytearray(data[:0x72])
+    out_hdr = bytearray(data[:table + 2])
     out_desc = bytearray()
     for g in new_groups:
         out_desc += struct.pack("<HHI", g["grp"], g["n"], g["size"])
@@ -242,6 +274,7 @@ def apply_splash_replacements(u, replacement_dir: str = "replacement") -> Option
     if not found:
         return None
 
+    off = block_offset(u.payload)
     uncomp, old_usize, old_csize = extract_uncompressed_block(u.payload)
     replacements_data = {target: png_bytes for target, (fn, png_bytes) in found.items()}
 
@@ -256,19 +289,22 @@ def apply_splash_replacements(u, replacement_dir: str = "replacement") -> Option
     new_hdr = struct.pack(">III", 0xC, new_usize, new_csize)
     new_blob = new_hdr + new_stream
 
-    if len(new_blob) > MAX_BLOCK_SPAN:
+    # seg5 is the last segment and runs to the end of the payload, so the block may grow
+    # into the erased tail but never past the end of the file.
+    max_span = len(u.payload) - off
+    if len(new_blob) > max_span:
         raise RuntimeError(
-            f"Recompressed block size {len(new_blob)} exceeds available seg5 space {MAX_BLOCK_SPAN}"
+            f"Recompressed block size {len(new_blob)} exceeds available seg5 space {max_span}"
         )
 
     # Write new block into seg5 in UPF payload
     orig_total_span = 0xC + old_csize
-    u.payload[BLOCK_PAYLOAD_OFFSET : BLOCK_PAYLOAD_OFFSET + len(new_blob)] = new_blob
+    u.payload[off : off + len(new_blob)] = new_blob
 
     # Pad leftover space with erased flash (0xFF)
     if len(new_blob) < orig_total_span:
         pad_len = orig_total_span - len(new_blob)
-        u.payload[BLOCK_PAYLOAD_OFFSET + len(new_blob) : BLOCK_PAYLOAD_OFFSET + orig_total_span] = b"\xFF" * pad_len
+        u.payload[off + len(new_blob) : off + orig_total_span] = b"\xFF" * pad_len
 
     return {
         "count": len(found),
