@@ -1,8 +1,6 @@
 <img width="480" height="127" alt="logo" src="https://github.com/user-attachments/assets/bce59f9d-331a-444f-90f7-76bc63330e21" />
 
-SnowCut is a desktop application for designing, scanning, and cutting with the CM110 scanning and cutting machine. It supplements the machine's built-in editing and cutting workflow with one that runs on a PC and communicates with the machine over the USB cable. It also allows you to scan and cut using an unrecognized/unsupported mat, or even no mat at all, as long as the media is wide enough to engage both roller grips.
-
-NOTE: The CM110 and CM250 seem to use the exact same firmware, and actually seem to be the exact same machine? While I can't many any guarantees, it seems quite likely that SnowCut will also work on models labeled CM250 as well. Reports are welcome.
+SnowCut is a desktop application for designing, scanning, and cutting with the CM100/CM110 scanning and cutting machine. It supplements the machine's built-in editing and cutting workflow with one that runs on a PC and communicates with the machine over the USB cable. It also allows you to scan and cut using an unrecognized/unsupported mat, or even no mat at all, as long as the media is wide enough to engage both roller grips.
 
 I designed this software for myself because I was frustrated with the limitations imposed by the original firmware. I've tested it only as far as necessary to do what I use it for, and I've only tested it on my own machine. Please let me know via an issue if you have alignment issues or if there's anything else that needs improvement. The additional functions may allow you to do things with your machine that it is not designed to do, so please use with care! **This software is provided for free with no guarantee of suitability for any purpose. Use at your own risk.**
 
