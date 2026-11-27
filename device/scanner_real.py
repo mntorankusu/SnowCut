@@ -42,6 +42,8 @@ try:
         scan_jpeg_restore as fw_scan_jpeg_restore,
         scan_stop as fw_scan_stop,
         scan_fetch as fw_scan_fetch,
+        scan_free as fw_scan_free,
+        _is_ram_ptr as fw_is_ram_ptr,
         get_scan_status as fw_scan_status,
         get_matkind as fw_matkind,
         mov_event as fw_mov_event,
@@ -294,6 +296,23 @@ class RealScanner:
         if self.dev is None:
             self.dev = fw_dev()
 
+    def _check_image_readable(self):
+        """Refuse to read a scan image outside the firmware's RAM window (0x88000000..0x8c000000).
+
+        Some units (seen on a CM600, 10/11/2026) put the scan in another heap, e.g. 0x4359ad14. The
+        firmware's read command refuses that address and, under libusb, the USB link drops until the
+        machine is restarted. Free the buffer and report the cause instead."""
+        if fw_is_ram_ptr(self._image_ptr):
+            return
+        try:
+            fw_scan_free(self.dev)
+        except Exception:
+            pass
+        self._drop_dev()
+        raise RuntimeError("The scan image is at 0x%08x, outside the memory the firmware can read, "
+                           "so it was not downloaded. Scan again; if it repeats, the firmware "
+                           "may need the patch for this model." % self._image_ptr)
+
     def _drop_dev(self):
         """Release the USB handle (the machine is free for other operations)."""
         if self.dev is not None and not self._borrowed:
@@ -392,6 +411,7 @@ class RealScanner:
         except Exception as e:
             raise RuntimeError("Could not connect to the machine to download the scan: %s"
                                % friendly_error(e)) from None
+        self._check_image_readable()
         _pop(self.dev, "retrieving")
         try:
             fw_scan_fetch(self.dev, self._image_ptr, self._image_len, out=target)   # also frees
@@ -426,6 +446,7 @@ class RealScanner:
         meta = dict(self.result_meta or {"fmt": "jpeg", "dpi": self.scan_dpi, "col0": 0, "row0": 0})
         info = self._scan_info or {}
         meta["offsets"] = (info.get("roff", 0), info.get("goff", 0), info.get("boff", 0))
+        self._check_image_readable()
         _pop(self.dev, "retrieving")
         try:
             data = fw_scan_fetch(self.dev, self._image_ptr, self._image_len, out=None,
