@@ -334,21 +334,38 @@ def request_sense(dev):
 class MotionBusyTimeout(IOError):
     pass
 
+MOTION_USB_RETRIES = 3   # transport errors (USB timeout, desynchronised reply) before giving up
+
 def motion_retry(dev, subop, timeout=60.0, poll=0.01, **kw):
     """motion() that retries while the firmware refuses with SENSE_BUSY (the
     previous move, Z move or a full locus queue). Raises CommandRejected for
-    any other failure, MotionBusyTimeout if still busy after `timeout` s."""
+    any other failure, MotionBusyTimeout if still busy after `timeout` s.
+
+    A USB transport error (the reply never arrives, e.g. a libusb timeout seen
+    at 34 % of a long job while the machine was still alive) resets the
+    transport and sends the same command again, up to MOTION_USB_RETRIES times.
+    G0, M3 and M5 are idempotent; a repeated G1 adds at worst a zero-length segment."""
     deadline = time.time() + timeout
+    usb_tries = 0
     while True:
-        st = motion(dev, subop, **kw)
-        if st == 0:
-            return
-        sense = request_sense(dev)
-        if sense != SENSE_BUSY:
-            raise CommandRejected("MOTION 0x%02x failed (CSW %d, sense %s)" % (subop, st, sense))
-        if time.time() >= deadline:
-            raise MotionBusyTimeout("MOTION 0x%02x: machine still busy after %.0f s" % (subop, timeout))
-        time.sleep(poll)
+        try:
+            st = motion(dev, subop, **kw)
+            if st == 0:
+                return
+            sense = request_sense(dev)
+            if sense != SENSE_BUSY:
+                raise CommandRejected("MOTION 0x%02x failed (CSW %d, sense %s)" % (subop, st, sense))
+            if time.time() >= deadline:
+                raise MotionBusyTimeout("MOTION 0x%02x: machine still busy after %.0f s" % (subop, timeout))
+            time.sleep(poll)
+        except (CommandRejected, MotionBusyTimeout):
+            raise
+        except (IOError, OSError):
+            if usb_tries >= MOTION_USB_RETRIES:
+                raise
+            usb_tries += 1
+            reset_recovery(dev)
+            time.sleep(0.3 * usb_tries)
 SCAN_START, SCAN_FREE, SCAN_STOP = (0x50, 0x51, 0x52)
 
 # --- motion state, read via 0xC0 from the tool-Z + head/mat mechanism block ---
